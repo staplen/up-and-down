@@ -10,7 +10,7 @@ const Game = (() => {
       players,
       dealerIndex: 0,
       currentRound: 0,
-      phase: 'roundStart',
+      phase: 'bidding',
       rounds: []
     };
   }
@@ -43,11 +43,11 @@ const Game = (() => {
       confirmed: false
     };
     gameState.players.forEach(p => {
-      round.bids[p.id] = 0;
+      round.bids[p.id] = null;
       round.tricks[p.id] = 0;
     });
     gameState.rounds[gameState.currentRound] = round;
-    gameState.phase = 'roundStart';
+    gameState.phase = 'bidding';
     return gameState;
   }
 
@@ -61,6 +61,12 @@ const Game = (() => {
     const max = round.cardsDealt;
     round.bids[playerId] = Math.max(0, Math.min(max, amount));
     return gameState;
+  }
+
+  function allBidsSet(gameState) {
+    const round = gameState.rounds[gameState.currentRound];
+    if (!round) return false;
+    return gameState.players.every(p => round.bids[p.id] !== null);
   }
 
   function lockBids(gameState) {
@@ -111,8 +117,7 @@ const Game = (() => {
   }
 
   function confirmRound(gameState) {
-    gameState = scoreRound(gameState, gameState.currentRound);
-    return gameState;
+    return scoreRound(gameState, gameState.currentRound);
   }
 
   function editPastRound(gameState, roundIndex, bids, tricks) {
@@ -121,8 +126,7 @@ const Game = (() => {
       round.bids[p.id] = bids[p.id];
       round.tricks[p.id] = tricks[p.id];
     });
-    gameState = scoreRound(gameState, roundIndex);
-    return gameState;
+    return scoreRound(gameState, roundIndex);
   }
 
   function advanceRound(gameState) {
@@ -160,15 +164,15 @@ const Game = (() => {
   function getTotalBids(gameState) {
     const round = gameState.rounds[gameState.currentRound];
     if (!round) return 0;
-    return Object.values(round.bids).reduce((sum, b) => sum + b, 0);
+    return Object.values(round.bids).reduce((sum, b) => sum + (b || 0), 0);
   }
 
   return {
     ROUND_CARDS, TOTAL_ROUNDS, MIN_PLAYERS, MAX_PLAYERS,
     createNewGame, getCardsForRound, getRiverDirection,
     getDealerIndex, getLeaderIndex, startRound, setTrumpSuit,
-    setBid, lockBids, awardTrick, reassignTrick, calculateScore,
-    scoreRound, confirmRound, editPastRound, advanceRound,
-    getCumulativeScores, getLeaderboard, getTotalBids
+    setBid, allBidsSet, lockBids, awardTrick, reassignTrick,
+    calculateScore, scoreRound, confirmRound, editPastRound,
+    advanceRound, getCumulativeScores, getLeaderboard, getTotalBids
   };
 })();

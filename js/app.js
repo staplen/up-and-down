@@ -1,38 +1,43 @@
 const App = (() => {
   let state = null;
+  let lastStepperRound = -1;
+  let savedStepperScroll = null;
 
   const SUIT_SYMBOLS = {
-    spades: '\u2660',
-    hearts: '\u2665',
-    diamonds: '\u2666',
-    clubs: '\u2663'
+    spades: '\u2660', hearts: '\u2665',
+    diamonds: '\u2666', clubs: '\u2663'
   };
-
   const SUIT_NAMES = ['spades', 'hearts', 'diamonds', 'clubs'];
 
   function init() {
     state = Storage.loadGame();
     if (state) {
+      if (state.phase === 'roundStart') state.phase = 'bidding';
       render();
     } else {
       showSetup();
     }
   }
 
-  function save() {
-    Storage.saveGame(state);
-  }
+  function save() { Storage.saveGame(state); }
 
   function showView(phase) {
     document.querySelectorAll('.view').forEach(v => {
-      v.classList.toggle('active', v.dataset.phase === phase);
+      const match = v.dataset.phase === phase;
+      if (match && !v.classList.contains('active')) {
+        v.classList.add('active');
+        v.classList.remove('view-exit');
+        void v.offsetWidth;
+        v.classList.add('view-enter');
+      } else if (!match && v.classList.contains('active')) {
+        v.classList.remove('active', 'view-enter');
+      }
     });
   }
 
   function render() {
     switch (state.phase) {
       case 'setup': renderSetup(); break;
-      case 'roundStart': renderRoundStart(); break;
       case 'bidding': renderBidding(); break;
       case 'trickPlay': renderTrickPlay(); break;
       case 'roundEnd': renderRoundEnd(); break;
@@ -42,7 +47,113 @@ const App = (() => {
     save();
   }
 
-  // --- Setup Phase ---
+  // ── Round Stepper ──────────────────────────────────────
+
+  function renderStepper() {
+    return `
+      <div class="round-stepper" id="round-stepper">
+        ${Game.ROUND_CARDS.map((cards, i) => {
+          const r = state.rounds[i];
+          const isPast = i < state.currentRound;
+          const isCurrent = i === state.currentRound;
+          const suit = r ? r.trumpSuit : null;
+          let cls = 'stepper-card';
+          if (isPast) cls += ' past';
+          else if (isCurrent) cls += ' current';
+          else cls += ' future';
+          if (suit) cls += ' ' + suit;
+          return `<div class="${cls}" data-round="${i}"><span class="stepper-count">${cards}</span>${suit ? `<span class="stepper-suit">${SUIT_SYMBOLS[suit]}</span>` : ''}</div>`;
+        }).join('')}
+      </div>`;
+  }
+
+  function saveStepperScroll() {
+    const stepper = document.getElementById('round-stepper');
+    if (stepper) savedStepperScroll = stepper.scrollLeft;
+  }
+
+  function scrollStepperToCurrent() {
+    if (lastStepperRound === state.currentRound) {
+      if (savedStepperScroll !== null) {
+        requestAnimationFrame(() => {
+          const stepper = document.getElementById('round-stepper');
+          if (stepper) stepper.scrollLeft = savedStepperScroll;
+        });
+      }
+      return;
+    }
+    lastStepperRound = state.currentRound;
+    requestAnimationFrame(() => {
+      const card = document.querySelector('#round-stepper .stepper-card.current');
+      if (card) card.scrollIntoView({ inline: 'center', behavior: 'smooth', block: 'nearest' });
+    });
+  }
+
+  function attachStepperTap() {
+    const card = document.querySelector('#round-stepper .stepper-card.current');
+    if (card && (state.phase === 'bidding' || state.phase === 'trickPlay')) {
+      card.classList.add('tappable');
+      card.addEventListener('click', showSuitPickerOverlay);
+    }
+  }
+
+  // ── Bottom Actions (New Game + Scores) ─────────────────
+
+  function renderBottomActions() {
+    if (state.phase === 'setup' || state.phase === 'gameOver') return '';
+    return `
+      <div class="bottom-actions">
+        <button class="bottom-btn" id="btn-scores">Scores</button>
+        <button class="bottom-btn" id="btn-reset">New Game</button>
+      </div>`;
+  }
+
+  function attachBottomActions() {
+    document.getElementById('btn-scores')?.addEventListener('click', showLeaderboardOverlay);
+    document.getElementById('btn-reset')?.addEventListener('click', showResetOverlay);
+  }
+
+  // ── Number Row (shared) ────────────────────────────────
+
+  function renderNumberRow(player, max, selectedValue, opts) {
+    const bidRef = opts && opts.bidRef;
+    const field = (opts && opts.field) || '';
+    const role = (opts && opts.role) || '';
+    const roleCls = role ? ` role-${role}` : '';
+    const roleLabel = role ? `<span class="role-label">${role === 'dealer' ? 'Dealer' : 'Leads'}</span>` : '';
+    return `
+      <div class="number-row${roleCls}">
+        ${roleLabel}
+        <div class="number-row-label">
+          <span class="number-row-name">${escapeHtml(player.name)}</span>
+          ${bidRef !== undefined && bidRef !== null ? `<span class="number-row-ref">bid ${bidRef}</span>` : ''}
+        </div>
+        <div class="number-buttons-wrap">
+          <div class="number-buttons">
+            ${Array.from({length: max + 1}, (_, n) =>
+              `<button class="num-btn${selectedValue === n ? ' selected' : ''}" data-player="${player.id}" data-value="${n}" data-field="${field}">${n}</button>`
+            ).join('')}
+          </div>
+        </div>
+      </div>`;
+  }
+
+  function setupScrollFade() {
+    const init = () => {
+      document.querySelectorAll('.number-buttons').forEach(nb => {
+        const check = () => {
+          const over = nb.scrollWidth > nb.clientWidth + 1;
+          const atEnd = nb.scrollLeft + nb.clientWidth >= nb.scrollWidth - 2;
+          nb.parentElement.classList.toggle('scroll-fade', over && !atEnd);
+        };
+        check();
+        nb.addEventListener('scroll', check, { passive: true });
+      });
+    };
+    requestAnimationFrame(() => requestAnimationFrame(init));
+  }
+
+  // ── Setup Phase ────────────────────────────────────────
 
   function showSetup(prefillNames) {
     state = { phase: 'setup', players: [], setupNames: prefillNames || ['', ''] };
@@ -52,28 +163,27 @@ const App = (() => {
   function renderSetup() {
     const el = document.getElementById('view-setup');
     const names = state.setupNames || ['', ''];
-    const canStart = names.length >= Game.MIN_PLAYERS &&
-                     names.every(n => n.trim().length > 0);
+    const canStart = names.length >= Game.MIN_PLAYERS && names.every(n => n.trim().length > 0);
 
     el.innerHTML = `
       <div class="view-content">
         <h1 class="app-title">Up &amp; Down<br>the River</h1>
-        <div class="section-label">Players</div>
+        <div class="section-label">Players <span class="hint">first player deals \u2014 drag to set order</span></div>
         <div id="player-inputs" class="player-inputs">
           ${names.map((name, i) => `
-            <div class="player-input-row">
-              <span class="player-number">${i + 1}</span>
+            <div class="player-input-row${i === 0 ? ' is-dealer' : ''}" data-index="${i}">
+              <span class="drag-handle" aria-label="Drag to reorder">\u2630</span>
               <input type="text" class="player-name-input" value="${escapeAttr(name)}"
                      placeholder="Player ${i + 1}" data-index="${i}"
                      maxlength="20" autocomplete="off" autocorrect="off" spellcheck="false">
-              ${names.length > Game.MIN_PLAYERS ? `<button class="btn-icon btn-remove" data-index="${i}" aria-label="Remove player">&times;</button>` : ''}
+              ${i === 0 ? '<span class="dealer-badge">Dealer</span>' : ''}
+              ${names.length > Game.MIN_PLAYERS ? `<button class="btn-icon btn-remove" data-index="${i}" aria-label="Remove">&times;</button>` : ''}
             </div>
           `).join('')}
         </div>
         ${names.length < Game.MAX_PLAYERS ? `<button id="btn-add-player" class="btn-secondary">+ Add Player</button>` : ''}
         <button id="btn-start-game" class="btn-primary" ${canStart ? '' : 'disabled'}>Start Game</button>
-      </div>
-    `;
+      </div>`;
 
     el.querySelectorAll('.player-name-input').forEach(input => {
       input.addEventListener('input', (e) => {
@@ -81,12 +191,24 @@ const App = (() => {
         save();
         updateStartButton();
       });
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          if (state.setupNames.length < Game.MAX_PLAYERS) {
+            state.setupNames.push('');
+            render();
+            setTimeout(() => {
+              const inputs = el.querySelectorAll('.player-name-input');
+              inputs[inputs.length - 1].focus();
+            }, 50);
+          }
+        }
+      });
     });
 
     el.querySelectorAll('.btn-remove').forEach(btn => {
       btn.addEventListener('click', (e) => {
-        const idx = parseInt(e.currentTarget.dataset.index);
-        state.setupNames.splice(idx, 1);
+        state.setupNames.splice(parseInt(e.currentTarget.dataset.index), 1);
         render();
       });
     });
@@ -105,121 +227,122 @@ const App = (() => {
 
     document.getElementById('btn-start-game').addEventListener('click', () => {
       if (state.setupNames.every(n => n.trim().length > 0)) {
+        lastStepperRound = -1;
         state = Game.createNewGame(state.setupNames.map(n => n.trim()));
         state = Game.startRound(state);
         render();
       }
     });
+
+    setupDragReorder();
   }
 
   function updateStartButton() {
     const btn = document.getElementById('btn-start-game');
     if (!btn) return;
     const names = state.setupNames || [];
-    const canStart = names.length >= Game.MIN_PLAYERS &&
-                     names.every(n => n.trim().length > 0);
-    btn.disabled = !canStart;
+    btn.disabled = !(names.length >= Game.MIN_PLAYERS && names.every(n => n.trim().length > 0));
   }
 
-  // --- Round Start Phase ---
+  // ── Drag-to-Reorder ───────────────────────────────────
 
-  function renderRoundStart() {
-    const el = document.getElementById('view-round-start');
-    const roundNum = state.currentRound + 1;
-    const cards = Game.getCardsForRound(state.currentRound);
-    const direction = Game.getRiverDirection(state.currentRound);
-    const dealerIdx = Game.getDealerIndex(state);
-    const leaderIdx = Game.getLeaderIndex(state);
-    const round = state.rounds[state.currentRound];
-    const selectedSuit = round ? round.trumpSuit : null;
+  function setupDragReorder() {
+    const container = document.getElementById('player-inputs');
+    if (!container) return;
+    const rows = [...container.querySelectorAll('.player-input-row')];
+    if (rows.length < 2) return;
 
-    el.innerHTML = `
-      <div class="view-content">
-        <div class="round-header">
-          <div class="round-number">Round ${roundNum} <span class="of-total">of ${Game.TOTAL_ROUNDS}</span></div>
-          <div class="round-meta">
-            <span class="direction-badge ${direction}">${direction === 'up' ? '\u25B2 Up' : '\u25BC Down'} the River</span>
-            <span class="cards-badge">${cards} card${cards > 1 ? 's' : ''}</span>
-          </div>
-        </div>
-        <div class="info-rows">
-          <div class="info-row"><span class="info-label">Dealer</span><span class="info-value">${escapeHtml(state.players[dealerIdx].name)}</span></div>
-          <div class="info-row"><span class="info-label">Leads</span><span class="info-value">${escapeHtml(state.players[leaderIdx].name)}</span></div>
-        </div>
-        <div class="section-label">Trump Suit</div>
-        <div class="suit-picker">
-          ${SUIT_NAMES.map(suit => `
-            <button class="suit-btn ${suit} ${selectedSuit === suit ? 'selected' : ''}" data-suit="${suit}">
-              <span class="suit-symbol">${SUIT_SYMBOLS[suit]}</span>
-            </button>
-          `).join('')}
-        </div>
-        <button id="btn-collect-bids" class="btn-primary" ${selectedSuit ? '' : 'disabled'}>Collect Bids</button>
-      </div>
-    `;
+    rows.forEach((row, idx) => {
+      const handle = row.querySelector('.drag-handle');
+      if (!handle) return;
 
-    el.querySelectorAll('.suit-btn').forEach(btn => {
-      btn.addEventListener('click', (e) => {
-        const suit = e.currentTarget.dataset.suit;
-        state = Game.setTrumpSuit(state, suit);
-        render();
+      handle.addEventListener('pointerdown', (e) => {
+        e.preventDefault();
+        handle.setPointerCapture(e.pointerId);
+        let dragIdx = idx;
+        const startY = e.clientY;
+        const rowH = row.offsetHeight + 8;
+        row.classList.add('dragging');
+        container.classList.add('reordering');
+
+        const onMove = (ev) => {
+          const dy = ev.clientY - startY;
+          rows[dragIdx].style.transform = `translateY(${dy}px)`;
+          const shift = Math.round(dy / rowH);
+          const target = Math.max(0, Math.min(rows.length - 1, dragIdx + shift));
+          rows.forEach((r, i) => {
+            if (i === dragIdx) return;
+            if (dragIdx < target && i > dragIdx && i <= target) r.style.transform = `translateY(${-rowH}px)`;
+            else if (dragIdx > target && i < dragIdx && i >= target) r.style.transform = `translateY(${rowH}px)`;
+            else r.style.transform = '';
+          });
+        };
+
+        const onUp = (ev) => {
+          handle.removeEventListener('pointermove', onMove);
+          handle.removeEventListener('pointerup', onUp);
+          handle.removeEventListener('pointercancel', onUp);
+          const dy = ev.clientY - startY;
+          const target = Math.max(0, Math.min(rows.length - 1, dragIdx + Math.round(dy / rowH)));
+          if (target !== dragIdx) {
+            const item = state.setupNames.splice(dragIdx, 1)[0];
+            state.setupNames.splice(target, 0, item);
+          }
+          rows.forEach(r => { r.style.transform = ''; r.classList.remove('dragging'); });
+          container.classList.remove('reordering');
+          render();
+        };
+
+        handle.addEventListener('pointermove', onMove);
+        handle.addEventListener('pointerup', onUp);
+        handle.addEventListener('pointercancel', onUp);
       });
     });
-
-    document.getElementById('btn-collect-bids').addEventListener('click', () => {
-      state.phase = 'bidding';
-      render();
-    });
   }
 
-  // --- Bidding Phase ---
+  // ── Bidding Phase ──────────────────────────────────────
 
   function renderBidding() {
+    saveStepperScroll();
     const el = document.getElementById('view-bidding');
     const round = state.rounds[state.currentRound];
     const maxBid = round.cardsDealt;
     const totalBids = Game.getTotalBids(state);
-    const overUnder = totalBids - maxBid;
-    let overUnderText = '';
-    if (overUnder > 0) overUnderText = `<span class="over">Over by ${overUnder}</span>`;
-    else if (overUnder < 0) overUnderText = `<span class="under">Under by ${Math.abs(overUnder)}</span>`;
-    else overUnderText = `<span class="even">Even</span>`;
+    const allSet = Game.allBidsSet(state);
+    const canLock = allSet;
+
+    let overUnderHtml = '';
+    if (allSet) {
+      const d = totalBids - maxBid;
+      if (d > 0) overUnderHtml = `<span class="ou over">+${d} over</span>`;
+      else if (d < 0) overUnderHtml = `<span class="ou under">${d} under</span>`;
+      else overUnderHtml = `<span class="ou even">even</span>`;
+    }
+
+    const dealerIdx = Game.getDealerIndex(state);
+    const leaderIdx = Game.getLeaderIndex(state);
 
     el.innerHTML = `
       <div class="view-content">
-        <div class="round-header compact">
-          <div class="round-number">Round ${state.currentRound + 1} &mdash; Bids</div>
-          <div class="round-meta">
-            <span class="trump-display ${round.trumpSuit}">${SUIT_SYMBOLS[round.trumpSuit]} Trump</span>
-          </div>
+        ${renderStepper()}
+        <div class="number-rows">
+          ${state.players.map(p => {
+            let role = '';
+            if (p.id === state.players[dealerIdx].id) role = 'dealer';
+            else if (p.id === state.players[leaderIdx].id) role = 'leads';
+            return renderNumberRow(p, maxBid, round.bids[p.id], { field: 'bids', role });
+          }).join('')}
         </div>
-        <div class="bid-summary">
-          <span>Total bids: <strong>${totalBids}</strong> / ${maxBid} tricks</span>
-          ${overUnderText}
+        <div class="bid-tally">
+          Bids: <strong>${totalBids}</strong> / ${maxBid} ${overUnderHtml}
         </div>
-        <div class="bid-list">
-          ${state.players.map(p => `
-            <div class="bid-row">
-              <span class="bid-player-name">${escapeHtml(p.name)}</span>
-              <div class="bid-controls">
-                <button class="btn-bid-adjust" data-player="${p.id}" data-delta="-1" ${round.bids[p.id] <= 0 ? 'disabled' : ''}>−</button>
-                <span class="bid-value">${round.bids[p.id]}</span>
-                <button class="btn-bid-adjust" data-player="${p.id}" data-delta="1" ${round.bids[p.id] >= maxBid ? 'disabled' : ''}>+</button>
-              </div>
-            </div>
-          `).join('')}
-        </div>
-        <button id="btn-lock-bids" class="btn-primary">Lock Bids</button>
-        <button id="btn-back-to-round" class="btn-secondary">Back</button>
-      </div>
-    `;
+        <button id="btn-lock-bids" class="btn-primary" ${canLock ? '' : 'disabled'}>Lock Bids</button>
+        ${renderBottomActions()}
+      </div>`;
 
-    el.querySelectorAll('.btn-bid-adjust').forEach(btn => {
+    el.querySelectorAll('.num-btn').forEach(btn => {
       btn.addEventListener('click', (e) => {
-        const playerId = parseInt(e.currentTarget.dataset.player);
-        const delta = parseInt(e.currentTarget.dataset.delta);
-        const current = round.bids[playerId];
-        state = Game.setBid(state, playerId, current + delta);
+        state = Game.setBid(state, parseInt(e.currentTarget.dataset.player), parseInt(e.currentTarget.dataset.value));
         render();
       });
     });
@@ -229,193 +352,155 @@ const App = (() => {
       render();
     });
 
-    document.getElementById('btn-back-to-round').addEventListener('click', () => {
-      state.phase = 'roundStart';
-      render();
-    });
+    attachStepperTap();
+    attachBottomActions();
+    scrollStepperToCurrent();
+    setupScrollFade();
   }
 
-  // --- Trick Play Phase ---
+  // ── Trick Play ─────────────────────────────────────────
 
   function renderTrickPlay() {
+    saveStepperScroll();
     const el = document.getElementById('view-trick-play');
     const round = state.rounds[state.currentRound];
-    const totalTricks = round.cardsDealt;
+    const total = round.cardsDealt;
     const awarded = round.trickLog.length;
-    const allDone = awarded >= totalTricks;
-    const currentTrick = awarded + 1;
 
     el.innerHTML = `
       <div class="view-content">
-        <div class="round-header compact">
-          <div class="round-number">Round ${state.currentRound + 1} &mdash; Play</div>
-          <div class="round-meta">
-            <span class="trump-display ${round.trumpSuit}">${SUIT_SYMBOLS[round.trumpSuit]} Trump</span>
-            <span class="trick-progress">${allDone ? 'All tricks played' : `Trick ${currentTrick} of ${totalTricks}`}</span>
-          </div>
+        ${renderStepper()}
+        <div class="phase-info tight">
+          <span class="phase-title">Trick ${awarded + 1} of ${total}</span>
         </div>
-        ${!allDone ? `
-          <div class="section-label">Who won this trick?</div>
-          <div class="trick-player-list">
-            ${state.players.map(p => `
-              <button class="trick-player-btn" data-player="${p.id}">
-                <span class="trick-player-name">${escapeHtml(p.name)}</span>
-                <span class="trick-player-count">${round.tricks[p.id]}</span>
-              </button>
-            `).join('')}
-          </div>
-        ` : `
-          <div class="section-label">Tricks complete</div>
-        `}
+        <div class="trick-player-list">
+          ${state.players.map(p => `
+            <button class="trick-player-btn" data-player="${p.id}">
+              <span class="trick-player-name">${escapeHtml(p.name)}</span>
+              <span class="trick-player-meta">bid ${round.bids[p.id] !== null ? round.bids[p.id] : '?'} \u00B7 got ${round.tricks[p.id]}</span>
+            </button>
+          `).join('')}
+        </div>
         ${awarded > 0 ? `
-          <div class="section-label">Trick Log</div>
+          <div class="section-label">Trick Log <span class="hint">tap to change</span></div>
           <div class="trick-log">
             ${round.trickLog.map((pid, i) => `
               <button class="trick-log-entry" data-trick-index="${i}">
                 <span class="trick-log-num">${i + 1}.</span>
                 <span class="trick-log-name">${escapeHtml(state.players.find(p => p.id === pid).name)}</span>
-                <span class="trick-log-edit">tap to change</span>
               </button>
             `).join('')}
           </div>
         ` : ''}
-        ${allDone ? `<button id="btn-end-round" class="btn-primary">Review &amp; Score</button>` : ''}
-      </div>
-    `;
+        ${renderBottomActions()}
+      </div>`;
 
-    // Reassign overlay state
-    el._reassignIndex = null;
-
-    if (!allDone) {
-      el.querySelectorAll('.trick-player-btn').forEach(btn => {
-        btn.addEventListener('click', (e) => {
-          const playerId = parseInt(e.currentTarget.dataset.player);
-          state = Game.awardTrick(state, playerId);
-          render();
-        });
-      });
-    }
-
-    el.querySelectorAll('.trick-log-entry').forEach(btn => {
+    el.querySelectorAll('.trick-player-btn').forEach(btn => {
       btn.addEventListener('click', (e) => {
-        const trickIndex = parseInt(e.currentTarget.dataset.trickIndex);
-        showReassignOverlay(trickIndex);
+        e.currentTarget.classList.add('flash');
+        state = Game.awardTrick(state, parseInt(e.currentTarget.dataset.player));
+        setTimeout(() => render(), 120);
       });
     });
 
-    const endBtn = document.getElementById('btn-end-round');
-    if (endBtn) {
-      endBtn.addEventListener('click', () => {
-        state.phase = 'roundEnd';
-        render();
-      });
-    }
+    el.querySelectorAll('.trick-log-entry').forEach(btn => {
+      btn.addEventListener('click', (e) => showReassignOverlay(parseInt(e.currentTarget.dataset.trickIndex)));
+    });
+
+    attachStepperTap();
+    attachBottomActions();
+    scrollStepperToCurrent();
   }
 
   function showReassignOverlay(trickIndex) {
-    const existing = document.querySelector('.overlay');
-    if (existing) existing.remove();
-
+    removeOverlay();
     const round = state.rounds[state.currentRound];
-    const currentHolder = round.trickLog[trickIndex];
-
-    const overlay = document.createElement('div');
-    overlay.className = 'overlay';
-    overlay.innerHTML = `
-      <div class="overlay-content">
-        <div class="overlay-title">Reassign Trick ${trickIndex + 1}</div>
-        <div class="overlay-subtitle">Currently: ${escapeHtml(state.players.find(p => p.id === currentHolder).name)}</div>
-        <div class="reassign-list">
-          ${state.players.map(p => `
-            <button class="reassign-btn ${p.id === currentHolder ? 'current' : ''}" data-player="${p.id}">
-              ${escapeHtml(p.name)}
-            </button>
-          `).join('')}
-        </div>
-        <button class="btn-secondary overlay-cancel">Cancel</button>
+    const holder = round.trickLog[trickIndex];
+    const overlay = createOverlay(`
+      <div class="overlay-title">Reassign Trick ${trickIndex + 1}</div>
+      <div class="overlay-subtitle">Currently: ${escapeHtml(state.players.find(p => p.id === holder).name)}</div>
+      <div class="reassign-list">
+        ${state.players.map(p => `
+          <button class="reassign-btn${p.id === holder ? ' current' : ''}" data-player="${p.id}">${escapeHtml(p.name)}</button>
+        `).join('')}
       </div>
-    `;
-
-    overlay.querySelector('.overlay-cancel').addEventListener('click', () => overlay.remove());
-    overlay.addEventListener('click', (e) => {
-      if (e.target === overlay) overlay.remove();
-    });
-
+      <button class="btn-secondary overlay-cancel">Cancel</button>
+    `);
     overlay.querySelectorAll('.reassign-btn').forEach(btn => {
       btn.addEventListener('click', (e) => {
-        const newPlayerId = parseInt(e.currentTarget.dataset.player);
-        state = Game.reassignTrick(state, trickIndex, newPlayerId);
-        overlay.remove();
-        render();
+        state = Game.reassignTrick(state, trickIndex, parseInt(e.currentTarget.dataset.player));
+        overlay.remove(); render();
       });
     });
-
-    document.body.appendChild(overlay);
   }
 
-  // --- Round End Phase (Confirmation + Scoring) ---
+  // ── Suit Picker Overlay ────────────────────────────────
+
+  function showSuitPickerOverlay() {
+    removeOverlay();
+    const round = state.rounds[state.currentRound];
+    const overlay = createOverlay(`
+      <div class="overlay-title">Select Suit</div>
+      <div class="suit-picker-grid">
+        ${SUIT_NAMES.map(s => `
+          <button class="suit-btn-lg ${s}${round.trumpSuit === s ? ' selected' : ''}" data-suit="${s}">${SUIT_SYMBOLS[s]}</button>
+        `).join('')}
+      </div>
+      ${round.trumpSuit ? `<button class="btn-secondary" id="btn-clear-suit">Clear Suit</button>` : ''}
+      <button class="btn-secondary overlay-cancel">Cancel</button>
+    `);
+    overlay.querySelectorAll('.suit-btn-lg').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        state = Game.setTrumpSuit(state, e.currentTarget.dataset.suit);
+        overlay.remove(); render();
+      });
+    });
+    document.getElementById('btn-clear-suit')?.addEventListener('click', () => {
+      state.rounds[state.currentRound].trumpSuit = null;
+      overlay.remove(); render();
+    });
+  }
+
+  // ── Round End ──────────────────────────────────────────
 
   function renderRoundEnd(editingRoundIndex) {
     const el = document.getElementById('view-round-end');
     const isEditing = editingRoundIndex !== undefined;
-    const roundIdx = isEditing ? editingRoundIndex : state.currentRound;
-    const round = state.rounds[roundIdx];
-    const isConfirmed = round.confirmed;
+    const rIdx = isEditing ? editingRoundIndex : state.currentRound;
+    const round = state.rounds[rIdx];
 
-    if (!isConfirmed && !isEditing) {
-      renderConfirmation(el, roundIdx);
-    } else if (isEditing) {
-      renderEditRound(el, roundIdx);
-    } else {
-      renderScoreboard(el);
-    }
+    if (!round.confirmed && !isEditing) renderConfirmation(el, rIdx);
+    else if (isEditing) renderEditRound(el, rIdx);
+    else renderScoreboard(el);
+
     showView('roundEnd');
     save();
   }
 
-  function renderConfirmation(el, roundIdx) {
-    const round = state.rounds[roundIdx];
-    const maxTricks = round.cardsDealt;
+  function renderConfirmation(el, rIdx) {
+    saveStepperScroll();
+    const round = state.rounds[rIdx];
+    const max = round.cardsDealt;
+    const totalTricks = state.players.reduce((sum, p) => sum + round.tricks[p.id], 0);
+    const tricksMatch = totalTricks === max;
 
     el.innerHTML = `
       <div class="view-content">
-        <div class="round-header compact">
-          <div class="round-number">Round ${roundIdx + 1} &mdash; Confirm</div>
+        ${renderStepper()}
+        <div class="phase-info tight"><span class="phase-title">Confirm Tricks</span></div>
+        <div class="number-rows">
+          ${state.players.map(p => renderNumberRow(p, max, round.tricks[p.id], { bidRef: round.bids[p.id], field: 'tricks' })).join('')}
         </div>
-        <div class="section-label">Review before scoring</div>
-        <div class="confirm-list">
-          ${state.players.map(p => `
-            <div class="confirm-row">
-              <span class="confirm-name">${escapeHtml(p.name)}</span>
-              <div class="confirm-col">
-                <div class="confirm-label">Bid</div>
-                <div class="confirm-adjust">
-                  <button class="btn-bid-adjust" data-player="${p.id}" data-field="bids" data-delta="-1" ${round.bids[p.id] <= 0 ? 'disabled' : ''}>−</button>
-                  <span class="confirm-value">${round.bids[p.id]}</span>
-                  <button class="btn-bid-adjust" data-player="${p.id}" data-field="bids" data-delta="1" ${round.bids[p.id] >= maxTricks ? 'disabled' : ''}>+</button>
-                </div>
-              </div>
-              <div class="confirm-col">
-                <div class="confirm-label">Tricks</div>
-                <div class="confirm-adjust">
-                  <button class="btn-bid-adjust" data-player="${p.id}" data-field="tricks" data-delta="-1" ${round.tricks[p.id] <= 0 ? 'disabled' : ''}>−</button>
-                  <span class="confirm-value">${round.tricks[p.id]}</span>
-                  <button class="btn-bid-adjust" data-player="${p.id}" data-field="tricks" data-delta="1" ${round.tricks[p.id] >= maxTricks ? 'disabled' : ''}>+</button>
-                </div>
-              </div>
-            </div>
-          `).join('')}
-        </div>
-        <button id="btn-confirm-scores" class="btn-primary">Confirm &amp; Score</button>
-      </div>
-    `;
+        ${!tricksMatch ? `<div class="trick-warning">Tricks total <strong>${totalTricks}</strong> but this round has <strong>${max}</strong> trick${max !== 1 ? 's' : ''}</div>` : ''}
+        <button id="btn-confirm-scores" class="btn-primary" ${tricksMatch ? '' : 'disabled'}>Confirm &amp; Score</button>
+        ${renderBottomActions()}
+      </div>`;
 
-    el.querySelectorAll('.btn-bid-adjust').forEach(btn => {
+    el.querySelectorAll('.num-btn').forEach(btn => {
       btn.addEventListener('click', (e) => {
-        const playerId = parseInt(e.currentTarget.dataset.player);
-        const field = e.currentTarget.dataset.field;
-        const delta = parseInt(e.currentTarget.dataset.delta);
-        round[field][playerId] = Math.max(0, Math.min(maxTricks, round[field][playerId] + delta));
+        round.tricks[parseInt(e.currentTarget.dataset.player)] = parseInt(e.currentTarget.dataset.value);
+        round.trickLog = [];
+        state.players.forEach(p => { for (let t = 0; t < round.tricks[p.id]; t++) round.trickLog.push(p.id); });
         renderRoundEnd();
       });
     });
@@ -424,216 +509,203 @@ const App = (() => {
       state = Game.confirmRound(state);
       renderRoundEnd();
     });
+    attachStepperTap();
+    attachBottomActions();
+    scrollStepperToCurrent();
+    setupScrollFade();
   }
 
   function renderScoreboard(el) {
+    saveStepperScroll();
     const round = state.rounds[state.currentRound];
-    const cumulative = Game.getCumulativeScores(state);
-    const isLastRound = state.currentRound >= Game.TOTAL_ROUNDS - 1;
+    const cum = Game.getCumulativeScores(state);
+    const last = state.currentRound >= Game.TOTAL_ROUNDS - 1;
 
     el.innerHTML = `
       <div class="view-content">
-        <div class="round-header compact">
-          <div class="round-number">Round ${state.currentRound + 1} &mdash; Scores</div>
-        </div>
+        ${renderStepper()}
+        <div class="phase-info tight"><span class="phase-title">Round ${state.currentRound + 1} Scores</span></div>
         <div class="score-table">
-          <div class="score-table-header">
-            <span>Player</span>
-            <span>Bid</span>
-            <span>Got</span>
-            <span>Pts</span>
-            <span>Total</span>
-          </div>
+          <div class="score-table-header"><span>Player</span><span>Bid</span><span>Got</span><span>Pts</span><span>Total</span></div>
           ${state.players.map(p => {
             const made = round.bids[p.id] === round.tricks[p.id];
-            return `
-              <div class="score-table-row ${made ? 'made' : 'missed'}">
-                <span class="score-player-name">${escapeHtml(p.name)}</span>
-                <span>${round.bids[p.id]}</span>
-                <span>${round.tricks[p.id]}</span>
-                <span class="score-pts">${round.scores[p.id]}</span>
-                <span class="score-total">${cumulative[p.id]}</span>
-              </div>
-            `;
+            return `<div class="score-table-row ${made ? 'made' : 'missed'}">
+              <span class="score-player-name">${escapeHtml(p.name)}</span>
+              <span>${round.bids[p.id]}</span><span>${round.tricks[p.id]}</span>
+              <span class="score-pts">${round.scores[p.id]}</span>
+              <span class="score-total">${cum[p.id]}</span>
+            </div>`;
           }).join('')}
         </div>
+        <button id="btn-edit-current" class="btn-secondary">Edit This Round</button>
         ${state.currentRound > 0 ? `
           <div class="section-label">Past Rounds <span class="hint">tap to edit</span></div>
           <div class="past-rounds">
-            ${state.rounds.slice(0, state.currentRound).map((r, i) => {
-              if (!r || !r.confirmed) return '';
-              return `
-                <button class="past-round-btn" data-round="${i}">
-                  <span class="past-round-num">R${i + 1}</span>
-                  <span class="past-round-cards">${r.cardsDealt} card${r.cardsDealt > 1 ? 's' : ''}</span>
-                </button>
-              `;
-            }).join('')}
+            ${state.rounds.slice(0, state.currentRound).map((r, i) =>
+              r && r.confirmed ? `<button class="past-round-btn" data-round="${i}"><span class="past-round-num">R${i+1}</span><span class="past-round-cards">${r.cardsDealt}${r.trumpSuit ? ' ' + SUIT_SYMBOLS[r.trumpSuit] : ''}</span></button>` : ''
+            ).join('')}
           </div>
         ` : ''}
-        <button id="btn-next-round" class="btn-primary">${isLastRound ? 'Finish Game' : 'Next Round'}</button>
-      </div>
-    `;
+        <button id="btn-next-round" class="btn-primary">${last ? 'Finish Game' : 'Next Round'}</button>
+        ${renderBottomActions()}
+      </div>`;
 
-    el.querySelectorAll('.past-round-btn').forEach(btn => {
-      btn.addEventListener('click', (e) => {
-        const roundIdx = parseInt(e.currentTarget.dataset.round);
-        renderEditRound(el, roundIdx);
-      });
+    document.getElementById('btn-edit-current').addEventListener('click', () => {
+      renderEditRound(el, state.currentRound);
     });
-
+    el.querySelectorAll('.past-round-btn').forEach(btn =>
+      btn.addEventListener('click', (e) => renderEditRound(el, parseInt(e.currentTarget.dataset.round)))
+    );
     document.getElementById('btn-next-round').addEventListener('click', () => {
-      if (isLastRound) {
-        state.phase = 'gameOver';
-        Storage.saveToHistory(state);
-        render();
-      } else {
-        state = Game.advanceRound(state);
-        render();
-      }
+      if (last) { state.phase = 'gameOver'; Storage.saveToHistory(state); render(); }
+      else { state = Game.advanceRound(state); render(); }
     });
+    attachStepperTap();
+    attachBottomActions();
+    scrollStepperToCurrent();
   }
 
-  function renderEditRound(el, roundIdx) {
-    const round = state.rounds[roundIdx];
-    const maxTricks = round.cardsDealt;
+  function renderEditRound(el, rIdx) {
+    saveStepperScroll();
+    const round = state.rounds[rIdx];
+    const max = round.cardsDealt;
+    if (!el._eo || el._eo.r !== rIdx) el._eo = { r: rIdx, b: { ...round.bids }, t: { ...round.tricks } };
+
+    const totalTricks = state.players.reduce((sum, p) => sum + round.tricks[p.id], 0);
+    const tricksMatch = totalTricks === max;
 
     el.innerHTML = `
       <div class="view-content">
-        <div class="round-header compact">
-          <div class="round-number">Edit Round ${roundIdx + 1}</div>
-        </div>
-        <div class="confirm-list">
-          ${state.players.map(p => `
-            <div class="confirm-row">
-              <span class="confirm-name">${escapeHtml(p.name)}</span>
-              <div class="confirm-col">
-                <div class="confirm-label">Bid</div>
-                <div class="confirm-adjust">
-                  <button class="btn-bid-adjust" data-player="${p.id}" data-field="bids" data-delta="-1" ${round.bids[p.id] <= 0 ? 'disabled' : ''}>−</button>
-                  <span class="confirm-value">${round.bids[p.id]}</span>
-                  <button class="btn-bid-adjust" data-player="${p.id}" data-field="bids" data-delta="1" ${round.bids[p.id] >= maxTricks ? 'disabled' : ''}>+</button>
-                </div>
-              </div>
-              <div class="confirm-col">
-                <div class="confirm-label">Tricks</div>
-                <div class="confirm-adjust">
-                  <button class="btn-bid-adjust" data-player="${p.id}" data-field="tricks" data-delta="-1" ${round.tricks[p.id] <= 0 ? 'disabled' : ''}>−</button>
-                  <span class="confirm-value">${round.tricks[p.id]}</span>
-                  <button class="btn-bid-adjust" data-player="${p.id}" data-field="tricks" data-delta="1" ${round.tricks[p.id] >= maxTricks ? 'disabled' : ''}>+</button>
-                </div>
-              </div>
-            </div>
-          `).join('')}
-        </div>
-        <button id="btn-save-edit" class="btn-primary">Save Changes</button>
+        ${renderStepper()}
+        <div class="phase-info tight"><span class="phase-title">Edit Round ${rIdx + 1}</span></div>
+        <div class="section-label">Bids</div>
+        <div class="number-rows">${state.players.map(p => renderNumberRow(p, max, round.bids[p.id], { field: 'bids' })).join('')}</div>
+        <div class="section-label">Tricks</div>
+        <div class="number-rows">${state.players.map(p => renderNumberRow(p, max, round.tricks[p.id], { field: 'tricks' })).join('')}</div>
+        ${!tricksMatch ? `<div class="trick-warning">Tricks total <strong>${totalTricks}</strong> but this round has <strong>${max}</strong> trick${max !== 1 ? 's' : ''}</div>` : ''}
+        <button id="btn-save-edit" class="btn-primary" ${tricksMatch ? '' : 'disabled'}>Save Changes</button>
         <button id="btn-cancel-edit" class="btn-secondary">Cancel</button>
-      </div>
-    `;
+        ${renderBottomActions()}
+      </div>`;
 
-    el.querySelectorAll('.btn-bid-adjust').forEach(btn => {
+    el.querySelectorAll('.num-btn').forEach(btn => {
       btn.addEventListener('click', (e) => {
-        const playerId = parseInt(e.currentTarget.dataset.player);
-        const field = e.currentTarget.dataset.field;
-        const delta = parseInt(e.currentTarget.dataset.delta);
-        round[field][playerId] = Math.max(0, Math.min(maxTricks, round[field][playerId] + delta));
-        renderEditRound(el, roundIdx);
+        round[e.currentTarget.dataset.field][parseInt(e.currentTarget.dataset.player)] = parseInt(e.currentTarget.dataset.value);
+        renderEditRound(el, rIdx);
       });
     });
-
     document.getElementById('btn-save-edit').addEventListener('click', () => {
-      state = Game.editPastRound(state, roundIdx, round.bids, round.tricks);
-      renderScoreboard(el);
+      state = Game.editPastRound(state, rIdx, round.bids, round.tricks);
+      el._eo = null; renderScoreboard(el);
     });
-
     document.getElementById('btn-cancel-edit').addEventListener('click', () => {
-      renderScoreboard(el);
+      const o = el._eo;
+      state.players.forEach(p => { round.bids[p.id] = o.b[p.id]; round.tricks[p.id] = o.t[p.id]; });
+      el._eo = null; renderScoreboard(el);
     });
+    attachStepperTap();
+    attachBottomActions();
+    scrollStepperToCurrent();
+    setupScrollFade();
   }
 
-  // --- Game Over Phase ---
+  // ── Game Over ──────────────────────────────────────────
 
   function renderGameOver() {
     const el = document.getElementById('view-game-over');
-    const leaderboard = Game.getLeaderboard(state);
-    const topScore = leaderboard[0].totalScore;
+    const lb = Game.getLeaderboard(state);
+    const top = lb[0].totalScore;
     const showStats = el._showStats || false;
 
     el.innerHTML = `
       <div class="view-content">
         <h1 class="game-over-title">Game Over!</h1>
         <div class="leaderboard">
-          ${leaderboard.map((p, i) => {
-            const isWinner = p.totalScore === topScore;
-            return `
-              <div class="leaderboard-row ${isWinner ? 'winner' : ''}">
-                <span class="leaderboard-rank">${i + 1}</span>
-                <span class="leaderboard-name">${escapeHtml(p.name)} ${isWinner ? '\uD83C\uDFC6' : ''}</span>
-                <span class="leaderboard-score">${p.totalScore}</span>
-              </div>
-            `;
+          ${lb.map((p, i) => {
+            const w = p.totalScore === top;
+            return `<div class="leaderboard-row${w ? ' winner' : ''}">
+              <span class="leaderboard-rank">${i+1}</span>
+              <span class="leaderboard-name">${escapeHtml(p.name)}${w ? ' \uD83C\uDFC6' : ''}</span>
+              <span class="leaderboard-score">${p.totalScore}</span>
+            </div>`;
           }).join('')}
         </div>
         <button id="btn-toggle-stats" class="btn-secondary">${showStats ? 'Hide Stats' : 'Show Stats'}</button>
         ${showStats ? renderStatsTable() : ''}
         <button id="btn-play-again" class="btn-primary">Play Again</button>
-      </div>
-    `;
+      </div>`;
 
-    document.getElementById('btn-toggle-stats').addEventListener('click', () => {
-      el._showStats = !el._showStats;
-      renderGameOver();
-    });
-
+    document.getElementById('btn-toggle-stats').addEventListener('click', () => { el._showStats = !el._showStats; renderGameOver(); });
     document.getElementById('btn-play-again').addEventListener('click', () => {
       const names = state.players.map(p => p.name);
-      Storage.clearGame();
-      showSetup(names);
+      Storage.clearGame(); lastStepperRound = -1; showSetup(names);
     });
   }
 
   function renderStatsTable() {
-    let html = '<div class="stats-table-wrapper"><table class="stats-table"><thead><tr><th>Rnd</th>';
-    state.players.forEach(p => {
-      html += `<th>${escapeHtml(p.name)}</th>`;
-    });
-    html += '</tr></thead><tbody>';
-
-    state.rounds.forEach((round, i) => {
-      if (!round || !round.confirmed) return;
-      html += `<tr><td class="stats-round-num">${i + 1}</td>`;
+    let h = '<div class="stats-table-wrapper"><table class="stats-table"><thead><tr><th>Rnd</th>';
+    state.players.forEach(p => { h += `<th>${escapeHtml(p.name)}</th>`; });
+    h += '</tr></thead><tbody>';
+    state.rounds.forEach((r, i) => {
+      if (!r || !r.confirmed) return;
+      h += `<tr><td class="stats-round-num">${i+1}</td>`;
       state.players.forEach(p => {
-        const made = round.bids[p.id] === round.tricks[p.id];
-        html += `<td class="${made ? 'made' : 'missed'}">
-          <span class="stats-bid">${round.bids[p.id]}/${round.tricks[p.id]}</span>
-          <span class="stats-pts">${round.scores[p.id]}</span>
-        </td>`;
+        const m = r.bids[p.id] === r.tricks[p.id];
+        h += `<td class="${m?'made':'missed'}"><span class="stats-bid">${r.bids[p.id]}/${r.tricks[p.id]}</span><span class="stats-pts">${r.scores[p.id]}</span></td>`;
       });
-      html += '</tr>';
+      h += '</tr>';
     });
+    const c = Game.getCumulativeScores(state);
+    h += '<tr class="stats-total-row"><td><strong>Tot</strong></td>';
+    state.players.forEach(p => { h += `<td><strong>${c[p.id]}</strong></td>`; });
+    h += '</tr></tbody></table></div>';
+    return h;
+  }
 
-    const cumulative = Game.getCumulativeScores(state);
-    html += '<tr class="stats-total-row"><td><strong>Total</strong></td>';
-    state.players.forEach(p => {
-      html += `<td><strong>${cumulative[p.id]}</strong></td>`;
+  // ── Overlays ───────────────────────────────────────────
+
+  function removeOverlay() { document.querySelector('.overlay')?.remove(); }
+
+  function createOverlay(html) {
+    removeOverlay();
+    const o = document.createElement('div');
+    o.className = 'overlay';
+    o.innerHTML = `<div class="overlay-content">${html}</div>`;
+    o.querySelector('.overlay-cancel')?.addEventListener('click', () => o.remove());
+    o.addEventListener('click', (e) => { if (e.target === o) o.remove(); });
+    document.body.appendChild(o);
+    return o;
+  }
+
+  function showResetOverlay() {
+    const o = createOverlay(`
+      <div class="overlay-title">Reset Game?</div>
+      <div class="overlay-subtitle">Current progress will be lost.</div>
+      <button id="overlay-reset-yes" class="btn-primary btn-danger">New Game</button>
+      <button class="btn-secondary overlay-cancel">Cancel</button>
+    `);
+    document.getElementById('overlay-reset-yes').addEventListener('click', () => {
+      const names = state.players.map(p => p.name);
+      Storage.clearGame(); o.remove(); lastStepperRound = -1; showSetup(names);
     });
-    html += '</tr></tbody></table></div>';
-    return html;
   }
 
-  // --- Helpers ---
-
-  function escapeHtml(str) {
-    const div = document.createElement('div');
-    div.textContent = str;
-    return div.innerHTML;
+  function showLeaderboardOverlay() {
+    const lb = Game.getLeaderboard(state);
+    createOverlay(`
+      <div class="overlay-title">Scores</div>
+      <div class="leaderboard overlay-leaderboard">
+        ${lb.map((p, i) => `<div class="leaderboard-row"><span class="leaderboard-rank">${i+1}</span><span class="leaderboard-name">${escapeHtml(p.name)}</span><span class="leaderboard-score">${p.totalScore}</span></div>`).join('')}
+      </div>
+      <button class="btn-secondary overlay-cancel">Close</button>
+    `);
   }
 
-  function escapeAttr(str) {
-    return str.replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  }
+  // ── Helpers ────────────────────────────────────────────
+
+  function escapeHtml(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+  function escapeAttr(s) { return s.replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
   document.addEventListener('DOMContentLoaded', init);
-
   return { init, showSetup };
 })();
