@@ -325,6 +325,7 @@ const App = (() => {
     el.innerHTML = `
       <div class="view-content">
         ${renderStepper()}
+        <div class="phase-info tight"><span class="phase-title">Place Bids</span></div>
         <div class="number-rows">
           ${state.players.map(p => {
             let role = '';
